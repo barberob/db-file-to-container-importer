@@ -49,9 +49,6 @@ changelog:
       - Merge branch
 
 release:
-  github:
-    owner: "{{ .Env.GITHUB_REPOSITORY_OWNER }}"
-    name: "{{ .ProjectName }}"
   name_template: "{{.ProjectName}}-v{{.Version}}"
   draft: false
   prerelease: auto
