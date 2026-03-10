@@ -23,12 +23,12 @@ builds:
 
 archives:
   - id: dbimport
-    builds:
+    ids:
       - dbimport
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format: tar.gz
+    formats:
+      - tar.gz
     files:
-      - LICENSE
       - README.md
 
 checksum:
