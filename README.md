@@ -18,15 +18,38 @@ CLI interactive pour importer des fichiers SQL dans des conteneurs Docker.
 
 ## Prérequis
 
-- Go 1.21+
 - Docker
 - Conteneur de base de données actif
 
 ## Installation
 
+### Méthode 1 : Depuis les releases (recommandée)
+
+Téléchargez la dernière version pour votre architecture depuis la [page des releases](https://github.com/barberob/db-file-to-container-importer/releases).
+
+```bash
+# Linux (AMD64)
+cd /tmp
+curl -LO https://github.com/barberob/db-file-to-container-importer/releases/latest/download/dbimport_0.1.0_linux_amd64.tar.gz
+tar -xzf dbimport_0.1.0_linux_amd64.tar.gz
+sudo mv dbimport /usr/local/bin/
+```
+
+```bash
+# Linux (ARM64)
+cd /tmp
+curl -LO https://github.com/barberob/db-file-to-container-importer/releases/latest/download/dbimport_0.1.0_linux_arm64.tar.gz
+tar -xzf dbimport_0.1.0_linux_arm64.tar.gz
+sudo mv dbimport /usr/local/bin/
+```
+
+### Méthode 2 : Depuis les sources (développeurs)
+
+Nécessite Go 1.21+
+
 ```bash
 # Cloner le repository
-git clone <repository-url>
+git clone https://github.com/barberob/db-file-to-container-importer.git
 cd dbimport
 
 # Télécharger les dépendances
