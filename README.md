@@ -14,7 +14,6 @@ CLI interactive pour importer des fichiers SQL dans des conteneurs Docker.
 - ⚡ **Auto-configuration** : Détecte le type de base depuis l'image Docker
 - 🧹 **Vidage optionnel** : Possibilité de vider la base avant import
 - 💾 **Mémoire** : Se souvient du dernier dossier utilisé
-- 🔒 **Sécurisé** : Supporte les mots de passe (masqués)
 
 ## Prérequis
 
