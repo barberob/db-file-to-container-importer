@@ -23,16 +23,47 @@ func main() {
 		log.Fatal("Aucun conteneur Docker actif: ", err)
 	}
 
-	startDir := loadLastDir()
-	selectedFile, err := browseForFile(startDir)
-	if err != nil {
+	// Step 0: Select source (local or S3)
+	var source string
+	sourceForm := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Source du fichier").
+				Options(
+					huh.NewOption("📁 Fichier local", "local"),
+					huh.NewOption("☁️  Bucket S3", "s3"),
+				).
+				Value(&source).
+				Height(5),
+		),
+	)
+
+	if err := sourceForm.Run(); err != nil {
 		os.Exit(0)
 	}
 
-	// Save the directory of the selected file for next time
-	fileDir := filepath.Dir(selectedFile)
-	if err := saveLastDir(fileDir); err != nil {
-		log.Printf("Warning: could not save last directory: %v", err)
+	var selectedFile string
+	var cleanup func()
+
+	if source == "s3" {
+		var err error
+		selectedFile, cleanup, err = getFileFromS3()
+		if err != nil {
+			log.Fatal("Erreur S3: ", err)
+		}
+		defer cleanup()
+	} else {
+		startDir := loadLastDir()
+		selectedFile, err = browseForFile(startDir)
+		if err != nil {
+			os.Exit(0)
+		}
+
+		// Save the directory of the selected file for next time
+		fileDir := filepath.Dir(selectedFile)
+		if err := saveLastDir(fileDir); err != nil {
+			log.Printf("Warning: could not save last directory: %v", err)
+		}
 	}
 
 	var (
@@ -79,13 +110,21 @@ func main() {
 		}
 	}
 
+	// Load saved config for this container
+	savedConfig := loadContainerConfig(selectedContainer)
+	hasSavedConfig := savedConfig != nil
+	if hasSavedConfig {
+		dbName = savedConfig.DBName
+		dbUser = savedConfig.DBUser
+		dbPassword = savedConfig.DBPassword
+	}
+
 	// Set default user and password placeholder based on DB type
 	passwordPlaceholder := "password"
+	defaultUserPlaceholder := "root"
 	if dbType == "pgsql" {
-		dbUser = "app"
+		defaultUserPlaceholder = "app"
 		passwordPlaceholder = "app"
-	} else {
-		dbUser = "root"
 	}
 
 	// Step 3: Configuration
@@ -98,7 +137,7 @@ func main() {
 
 			huh.NewInput().
 				Title("Utilisateur DB").
-				Placeholder(dbUser).
+				Placeholder(defaultUserPlaceholder).
 				Value(&dbUser),
 
 			huh.NewInput().
@@ -111,18 +150,6 @@ func main() {
 
 	if err := restForm.Run(); err != nil {
 		os.Exit(0)
-	}
-
-	// Apply defaults
-	if dbName == "" {
-		dbName = "mydb"
-	}
-	if dbPassword == "" {
-		if dbType == "pgsql" {
-			dbPassword = "app"
-		} else {
-			dbPassword = "password"
-		}
 	}
 
 	// Step 4: Ask if should empty database before import
@@ -178,15 +205,15 @@ func main() {
 				}
 				createCmd = append(createCmd, selectedContainer, "createdb", "-U", dbUser, dbName)
 				run(createCmd[0], createCmd[1:]...)
-			case "mysql":
-				dropCmd := fmt.Sprintf("mysql -u %s", dbUser)
-				if dbPassword != "" {
-					dropCmd += fmt.Sprintf(" -p%s", dbPassword)
-				}
-				// Drop and recreate database
-				dropCmd += fmt.Sprintf(" -e \"DROP DATABASE IF EXISTS %s; CREATE DATABASE %s;\"", dbName, dbName)
-				run("docker", "exec", selectedContainer, "sh", "-c", dropCmd)
-			}
+	case "mysql":
+		dropCmd := fmt.Sprintf("mysql -u %s", dbUser)
+		if dbPassword != "" {
+			dropCmd += fmt.Sprintf(" -p%s", dbPassword)
+		}
+		// Drop and recreate database
+		dropCmd += fmt.Sprintf(" -e \"DROP DATABASE IF EXISTS %s; CREATE DATABASE %s;\"", dbName, dbName)
+		run("docker", "exec", selectedContainer, "sh", "-c", dropCmd)
+		}
 		}
 
 		switch dbType {
@@ -197,16 +224,16 @@ func main() {
 			}
 			pgCmd = append(pgCmd, selectedContainer, "psql", "-U", dbUser, "-d", dbName, "-f", remoteFile)
 			run(pgCmd[0], pgCmd[1:]...)
-		case "mysql":
-			mysqlCmd := fmt.Sprintf("mysql -u %s", dbUser)
-			if dbPassword != "" {
-				mysqlCmd += fmt.Sprintf(" -p%s", dbPassword)
-			}
-			mysqlCmd += fmt.Sprintf(" %s < %s", dbName, remoteFile)
-			run(
-				"docker", "exec", selectedContainer,
-				"sh", "-c", mysqlCmd,
-			)
+	case "mysql":
+		mysqlCmd := fmt.Sprintf("mysql -u %s", dbUser)
+		if dbPassword != "" {
+			mysqlCmd += fmt.Sprintf(" -p%s", dbPassword)
+		}
+		mysqlCmd += fmt.Sprintf(" %s < %s", dbName, remoteFile)
+		run(
+			"docker", "exec", selectedContainer,
+			"sh", "-c", mysqlCmd,
+		)
 		}
 
 		run("docker", "exec", selectedContainer, "rm", "-f", remoteFile)
@@ -219,6 +246,16 @@ func main() {
 
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	// Save container config for next time
+	containerCfg := &ContainerConfig{
+		DBName:     dbName,
+		DBUser:     dbUser,
+		DBPassword: dbPassword,
+	}
+	if err := saveContainerConfig(selectedContainer, containerCfg); err != nil {
+		log.Printf("Warning: could not save container config: %v", err)
 	}
 
 	fmt.Println("✅ Import terminé!")
@@ -271,8 +308,14 @@ func browseForFile(startDir string) (string, error) {
 			}
 		}
 
-		// SQL files
+		// SQL files - sorted by modification time
 		validExts := []string{".sql", ".sql.gz", ".dump"}
+		type fileInfo struct {
+			name    string
+			modTime int64
+		}
+		var files []fileInfo
+		
 		for _, e := range entries {
 			if e.IsDir() {
 				continue
@@ -280,10 +323,28 @@ func browseForFile(startDir string) (string, error) {
 			name := e.Name()
 			for _, ext := range validExts {
 				if strings.HasSuffix(name, ext) {
-					options = append(options, huh.NewOption("📄 "+name, "file:"+name))
+					info, _ := e.Info()
+					modTime := int64(0)
+					if info != nil {
+						modTime = info.ModTime().Unix()
+					}
+					files = append(files, fileInfo{name: name, modTime: modTime})
 					break
 				}
 			}
+		}
+		
+		// Sort by modification time (most recent first)
+		for i := 0; i < len(files)-1; i++ {
+			for j := i + 1; j < len(files); j++ {
+				if files[i].modTime < files[j].modTime {
+					files[i], files[j] = files[j], files[i]
+				}
+			}
+		}
+		
+		for _, f := range files {
+			options = append(options, huh.NewOption("📄 "+f.name, "file:"+f.name))
 		}
 
 		if len(options) == 0 {
