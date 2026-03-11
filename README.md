@@ -66,7 +66,7 @@ sudo cp dbimport /usr/local/bin/
 ## Utilisation
 
 ```bash
-./dbimport
+dbimport
 ```
 
 ### Flow interactif
