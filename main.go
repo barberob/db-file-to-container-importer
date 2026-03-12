@@ -204,81 +204,172 @@ func main() {
 		os.Exit(0)
 	}
 
-	importFn := func() {
-		baseName := filepath.Base(selectedFile)
-		dest := fmt.Sprintf("%s:/tmp/%s", selectedContainer, baseName)
-		run("docker", "cp", selectedFile, dest)
+	// Import with retry mechanism
+	importSuccess := false
+	var lastErr error
+	
+	for !importSuccess {
+		importFn := func() error {
+			baseName := filepath.Base(selectedFile)
+			dest := fmt.Sprintf("%s:/tmp/%s", selectedContainer, baseName)
+			if err := runWithError("docker", "cp", selectedFile, dest); err != nil {
+				return err
+			}
 
-		remoteFile := "/tmp/" + baseName
+			remoteFile := "/tmp/" + baseName
 
-		if strings.HasSuffix(remoteFile, ".gz") {
-			run("docker", "exec", selectedContainer,
-				"gunzip", "-f", remoteFile,
-			)
-			remoteFile = strings.TrimSuffix(remoteFile, ".gz")
-		}
+			if strings.HasSuffix(remoteFile, ".gz") {
+				if err := runWithError("docker", "exec", selectedContainer,
+					"gunzip", "-f", remoteFile,
+				); err != nil {
+					return err
+				}
+				remoteFile = strings.TrimSuffix(remoteFile, ".gz")
+			}
 
-		// Empty database if requested
-		if shouldEmptyDB {
-			fmt.Printf("🗑️  Vidage de la base '%s'...\n", dbName)
+			// Empty database if requested
+			if shouldEmptyDB {
+				fmt.Printf("🗑️  Vidage de la base '%s'...\n", dbName)
+				switch dbType {
+				case "pgsql":
+					// Drop database using dropdb command (doesn't run in transaction)
+					dropCmd := []string{"docker", "exec"}
+					if dbPassword != "" {
+						dropCmd = append(dropCmd, "-e", fmt.Sprintf("PGPASSWORD=%s", dbPassword))
+					}
+					dropCmd = append(dropCmd, selectedContainer, "dropdb", "--if-exists", "-U", dbUser, dbName)
+					if err := runWithError(dropCmd[0], dropCmd[1:]...); err != nil {
+						return err
+					}
+					
+					// Create database using createdb command
+					createCmd := []string{"docker", "exec"}
+					if dbPassword != "" {
+						createCmd = append(createCmd, "-e", fmt.Sprintf("PGPASSWORD=%s", dbPassword))
+					}
+					createCmd = append(createCmd, selectedContainer, "createdb", "-U", dbUser, dbName)
+					if err := runWithError(createCmd[0], createCmd[1:]...); err != nil {
+						return err
+					}
+				case "mysql":
+					dropCmd := fmt.Sprintf("mysql -u %s", dbUser)
+					if dbPassword != "" {
+						dropCmd += fmt.Sprintf(" -p%s", dbPassword)
+					}
+					// Drop and recreate database
+					dropCmd += fmt.Sprintf(" -e \"DROP DATABASE IF EXISTS %s; CREATE DATABASE %s;\"", dbName, dbName)
+					if err := runWithError("docker", "exec", selectedContainer, "sh", "-c", dropCmd); err != nil {
+						return err
+					}
+				}
+			}
+
 			switch dbType {
 			case "pgsql":
-				// Drop database using dropdb command (doesn't run in transaction)
-				dropCmd := []string{"docker", "exec"}
+				pgCmd := []string{"docker", "exec"}
 				if dbPassword != "" {
-					dropCmd = append(dropCmd, "-e", fmt.Sprintf("PGPASSWORD=%s", dbPassword))
+					pgCmd = append(pgCmd, "-e", fmt.Sprintf("PGPASSWORD=%s", dbPassword))
 				}
-				dropCmd = append(dropCmd, selectedContainer, "dropdb", "--if-exists", "-U", dbUser, dbName)
-				run(dropCmd[0], dropCmd[1:]...)
-				
-				// Create database using createdb command
-				createCmd := []string{"docker", "exec"}
+				pgCmd = append(pgCmd, selectedContainer, "psql", "-U", dbUser, "-d", dbName, "-f", remoteFile)
+				if err := runWithError(pgCmd[0], pgCmd[1:]...); err != nil {
+					return err
+				}
+			case "mysql":
+				mysqlCmd := fmt.Sprintf("mysql -u %s", dbUser)
 				if dbPassword != "" {
-					createCmd = append(createCmd, "-e", fmt.Sprintf("PGPASSWORD=%s", dbPassword))
+					mysqlCmd += fmt.Sprintf(" -p%s", dbPassword)
 				}
-				createCmd = append(createCmd, selectedContainer, "createdb", "-U", dbUser, dbName)
-				run(createCmd[0], createCmd[1:]...)
-	case "mysql":
-		dropCmd := fmt.Sprintf("mysql -u %s", dbUser)
-		if dbPassword != "" {
-			dropCmd += fmt.Sprintf(" -p%s", dbPassword)
-		}
-		// Drop and recreate database
-		dropCmd += fmt.Sprintf(" -e \"DROP DATABASE IF EXISTS %s; CREATE DATABASE %s;\"", dbName, dbName)
-		run("docker", "exec", selectedContainer, "sh", "-c", dropCmd)
-		}
-		}
-
-		switch dbType {
-		case "pgsql":
-			pgCmd := []string{"docker", "exec"}
-			if dbPassword != "" {
-				pgCmd = append(pgCmd, "-e", fmt.Sprintf("PGPASSWORD=%s", dbPassword))
+				mysqlCmd += fmt.Sprintf(" %s < %s", dbName, remoteFile)
+				if err := runWithError(
+					"docker", "exec", selectedContainer,
+					"sh", "-c", mysqlCmd,
+				); err != nil {
+					return err
+				}
 			}
-			pgCmd = append(pgCmd, selectedContainer, "psql", "-U", dbUser, "-d", dbName, "-f", remoteFile)
-			run(pgCmd[0], pgCmd[1:]...)
-	case "mysql":
-		mysqlCmd := fmt.Sprintf("mysql -u %s", dbUser)
-		if dbPassword != "" {
-			mysqlCmd += fmt.Sprintf(" -p%s", dbPassword)
-		}
-		mysqlCmd += fmt.Sprintf(" %s < %s", dbName, remoteFile)
-		run(
-			"docker", "exec", selectedContainer,
-			"sh", "-c", mysqlCmd,
-		)
+
+			if err := runWithError("docker", "exec", selectedContainer, "rm", "-f", remoteFile); err != nil {
+				return err
+			}
+			
+			return nil
 		}
 
-		run("docker", "exec", selectedContainer, "rm", "-f", remoteFile)
-	}
+		err = spinner.New().
+			Title("Import en cours...").
+			Action(func() {
+				lastErr = importFn()
+			}).
+			Run()
 
-	err = spinner.New().
-		Title("Import en cours...").
-		Action(importFn).
-		Run()
-
-	if err != nil {
-		log.Fatal(err)
+		if err != nil || lastErr != nil {
+			var errorMsg string
+			if lastErr != nil {
+				errorMsg = lastErr.Error()
+			} else {
+				errorMsg = err.Error()
+			}
+			
+			fmt.Printf("\n❌ Échec de l'import: %s\n\n", errorMsg)
+			
+			// Ask user what to do
+			var action string
+			retryForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewSelect[string]().
+						Title("Que souhaitez-vous faire ?").
+						Options(
+							huh.NewOption("📝 Modifier les identifiants et réessayer", "retry"),
+							huh.NewOption("❌ Annuler", "cancel"),
+						).
+						Value(&action).
+						Height(5),
+				),
+			)
+			
+			if err := retryForm.Run(); err != nil {
+				os.Exit(0)
+			}
+			
+			if action == "cancel" {
+				os.Exit(1)
+			}
+			
+			// User wants to retry - show credential form again
+			savedDbUser := dbUser
+			savedDbPassword := dbPassword
+			
+			retryCredsForm := huh.NewForm(
+				huh.NewGroup(
+					huh.NewInput().
+						Title("Base de données").
+						Value(&dbName),
+					
+					huh.NewInput().
+						Title("Utilisateur DB").
+						Value(&dbUser),
+					
+					huh.NewInput().
+						Title("Mot de passe DB").
+						Password(true).
+						Value(&dbPassword),
+				),
+			)
+			
+			if err := retryCredsForm.Run(); err != nil {
+				os.Exit(0)
+			}
+			
+			// Apply saved values if fields are left empty
+			if dbUser == "" {
+				dbUser = savedDbUser
+			}
+			if dbPassword == "" {
+				dbPassword = savedDbPassword
+			}
+		} else {
+			importSuccess = true
+		}
 	}
 
 	// Save container config for next time
@@ -309,6 +400,13 @@ func run(name string, args ...string) {
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("Erreur: %s %v → %v", name, args, err)
 	}
+}
+
+func runWithError(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func browseForFile(startDir string) (string, error) {
