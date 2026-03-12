@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/charmbracelet/huh"
 )
 
@@ -256,10 +257,11 @@ func downloadS3File(client *s3.Client, bucket, key string) (string, error) {
 		fileSize = *headOutput.ContentLength
 	}
 
-	// Now download the file
+	// Now download the file with checksum validation
 	input := &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
+		Bucket:       aws.String(bucket),
+		Key:          aws.String(key),
+		ChecksumMode: types.ChecksumModeEnabled,
 	}
 
 	output, err := client.GetObject(context.Background(), input)
