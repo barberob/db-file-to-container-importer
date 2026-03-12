@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,7 +152,7 @@ func browseS3Files(client *s3.Client, bucket string) (string, error) {
 			size     int64
 		}
 		var files []s3FileInfo
-		
+
 		for _, obj := range output.Contents {
 			name := *obj.Key
 			// Skip the folder itself
@@ -174,7 +175,7 @@ func browseS3Files(client *s3.Client, bucket string) (string, error) {
 				}
 			}
 		}
-		
+
 		// Sort by modification time (most recent first)
 		for i := 0; i < len(files)-1; i++ {
 			for j := i + 1; j < len(files); j++ {
@@ -183,7 +184,7 @@ func browseS3Files(client *s3.Client, bucket string) (string, error) {
 				}
 			}
 		}
-		
+
 		for _, f := range files {
 			display := fmt.Sprintf("📄 %s (%d bytes)", f.fileName, f.size)
 			options = append(options, huh.NewOption(display, "file:"+f.name))
@@ -220,7 +221,42 @@ func browseS3Files(client *s3.Client, bucket string) (string, error) {
 	}
 }
 
+// progressReader wraps an io.Reader and reports progress
+type progressReader struct {
+	reader   io.Reader
+	total    int64
+	current  int64
+	onUpdate func(percent float64)
+}
+
+func (pr *progressReader) Read(p []byte) (n int, err error) {
+	n, err = pr.reader.Read(p)
+	pr.current += int64(n)
+	if pr.total > 0 {
+		percent := float64(pr.current) / float64(pr.total)
+		pr.onUpdate(percent)
+	}
+	return n, err
+}
+
 func downloadS3File(client *s3.Client, bucket, key string) (string, error) {
+	// First, get file metadata to know the size
+	headInput := &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}
+
+	headOutput, err := client.HeadObject(context.Background(), headInput)
+	if err != nil {
+		return "", fmt.Errorf("failed to get file info from S3: %w", err)
+	}
+
+	fileSize := int64(0)
+	if headOutput.ContentLength != nil {
+		fileSize = *headOutput.ContentLength
+	}
+
+	// Now download the file
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -246,14 +282,76 @@ func downloadS3File(client *s3.Client, bucket, key string) (string, error) {
 	}
 	defer tempFile.Close()
 
+	// Create progress bar
+	barWidth := 30
+	lastPercent := -1
+
+	// Print initial state at 0%
+	emptyBar := strings.Repeat("░", barWidth)
+	fmt.Printf("📥 Téléchargement: %s / %s [%s] 0%%", formatBytes(0), formatBytes(fileSize), emptyBar)
+
+	// Create progress-tracking reader with throttled updates
+	pr := &progressReader{
+		reader: output.Body,
+		total:  fileSize,
+		onUpdate: func(percent float64) {
+			// Only update every 1% to avoid flickering
+			currentPercent := int(percent * 100)
+			if currentPercent != lastPercent {
+				lastPercent = currentPercent
+				currentBytes := int64(float64(fileSize) * percent)
+
+				// Build progress bar
+				filled := int(percent * float64(barWidth))
+				if filled > barWidth {
+					filled = barWidth
+				}
+				bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+
+				fmt.Printf("\r📥 Téléchargement: %s / %s [%s] %d%%",
+					formatBytes(currentBytes),
+					formatBytes(fileSize),
+					bar,
+					currentPercent)
+			}
+		},
+	}
+
 	// Copy content
-	_, err = tempFile.ReadFrom(output.Body)
+	_, err = io.Copy(tempFile, pr)
 	if err != nil {
 		os.Remove(tempFile.Name())
 		return "", err
 	}
 
+	// Final update - show 100%
+	bar := strings.Repeat("█", barWidth)
+	fmt.Printf("\r📥 Téléchargement: %s / %s [%s] 100%% ✓\n",
+		formatBytes(fileSize),
+		formatBytes(fileSize),
+		bar)
+
 	return tempFile.Name(), nil
+}
+
+// formatBytes converts bytes to human-readable format
+func formatBytes(bytes int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/GB)
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/MB)
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/KB)
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
 }
 
 func getFileFromS3() (string, func(), error) {
@@ -274,7 +372,6 @@ func getFileFromS3() (string, func(), error) {
 		return "", nil, err
 	}
 
-	fmt.Printf("📥 Téléchargement de s3://%s/%s...\n", s3Cfg.Bucket, key)
 	tempFile, err := downloadS3File(client, s3Cfg.Bucket, key)
 	if err != nil {
 		return "", nil, err
