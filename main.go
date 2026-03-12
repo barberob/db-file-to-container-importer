@@ -141,6 +141,24 @@ func main() {
 	savedDbUser := dbUser
 	savedDbPassword := dbPassword
 
+	// Display info about parsed variables from Docker container
+	if envCreds != nil {
+		fmt.Println("\nℹ️  Variables d'environnement du conteneur:")
+		if envCreds.DBName != "" {
+			fmt.Printf("   - Base de données: %s\n", envCreds.DBName)
+		}
+		if envCreds.DBUser != "" {
+			fmt.Printf("   - Utilisateur: %s\n", envCreds.DBUser)
+		}
+		if envCreds.DBPassword != "" {
+			fmt.Printf("   - Mot de passe: %s\n", strings.Repeat("*", len(envCreds.DBPassword)))
+		}
+		if savedConfig != nil {
+			fmt.Println("   (les valeurs sauvegardées seront utilisées)")
+		}
+		fmt.Println()
+	}
+
 	// Step 3: Configuration
 	restForm := huh.NewForm(
 		huh.NewGroup(
