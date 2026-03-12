@@ -18,6 +18,9 @@ const helpText = "↑/↓: naviguer  |  /: filtrer  |  Entrée: valider  |  Ctrl
 var helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Italic(true)
 
 func main() {
+	// Check for updates asynchronously (non-blocking, silent on error)
+	checkForUpdateAsync()
+
 	containers, err := listContainers()
 	if err != nil || len(containers) == 0 {
 		log.Fatal("Aucun conteneur Docker actif: ", err)
@@ -127,6 +130,19 @@ func main() {
 		passwordPlaceholder = "app"
 	}
 
+	// Store saved values for later restoration if user leaves fields empty
+	// If saved value equals default, don't pre-fill to show placeholder
+	savedDbUser := dbUser
+	savedDbPassword := dbPassword
+
+	// Clear values so form starts fresh - show placeholder if saved == default
+	if dbUser == defaultUserPlaceholder {
+		dbUser = ""
+	}
+	if dbPassword == passwordPlaceholder {
+		dbPassword = ""
+	}
+
 	// Step 3: Configuration
 	restForm := huh.NewForm(
 		huh.NewGroup(
@@ -150,6 +166,23 @@ func main() {
 
 	if err := restForm.Run(); err != nil {
 		os.Exit(0)
+	}
+
+	// Apply saved values or defaults if fields are left empty
+	// If user didn't type anything (empty), restore saved value or use default
+	if dbUser == "" {
+		if savedDbUser != "" {
+			dbUser = savedDbUser
+		} else {
+			dbUser = defaultUserPlaceholder
+		}
+	}
+	if dbPassword == "" {
+		if savedDbPassword != "" {
+			dbPassword = savedDbPassword
+		} else {
+			dbPassword = passwordPlaceholder
+		}
 	}
 
 	// Step 4: Ask if should empty database before import
