@@ -95,3 +95,107 @@ func detectDBType(container string) string {
 	}
 	return ""
 }
+
+type ContainerCredentials struct {
+	DBName     string
+	DBUser     string
+	DBPassword string
+	Source     string // "env" or "saved" to track where it came from
+}
+
+func extractContainerEnvVars(container string) (map[string]string, error) {
+	out, err := exec.Command(
+		"docker", "inspect",
+		"--format", "{{range .Config.Env}}{{.}}\n{{end}}",
+		container,
+	).Output()
+	if err != nil {
+		return nil, err
+	}
+
+	envVars := make(map[string]string)
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			envVars[parts[0]] = parts[1]
+		}
+	}
+	return envVars, nil
+}
+
+func getCredentialsFromContainer(container string, dbType string) *ContainerCredentials {
+	envVars, err := extractContainerEnvVars(container)
+	if err != nil {
+		return nil
+	}
+
+	creds := &ContainerCredentials{Source: "env"}
+
+	switch dbType {
+	case "pgsql":
+		// PostgreSQL official image variables
+		if val, ok := envVars["POSTGRES_DB"]; ok {
+			creds.DBName = val
+		}
+		if val, ok := envVars["POSTGRES_USER"]; ok {
+			creds.DBUser = val
+		}
+		if val, ok := envVars["POSTGRES_PASSWORD"]; ok {
+			creds.DBPassword = val
+		}
+		// Fallback to common alternatives
+		if creds.DBName == "" {
+			if val, ok := envVars["PGDATABASE"]; ok {
+				creds.DBName = val
+			}
+		}
+		if creds.DBUser == "" {
+			if val, ok := envVars["PGUSER"]; ok {
+				creds.DBUser = val
+			}
+		}
+		if creds.DBPassword == "" {
+			if val, ok := envVars["PGPASSWORD"]; ok {
+				creds.DBPassword = val
+			}
+		}
+	case "mysql":
+		// MySQL/MariaDB official image variables
+		if val, ok := envVars["MYSQL_DATABASE"]; ok {
+			creds.DBName = val
+		} else if val, ok := envVars["MARIADB_DATABASE"]; ok {
+			creds.DBName = val
+		}
+		if val, ok := envVars["MYSQL_USER"]; ok {
+			creds.DBUser = val
+		} else if val, ok := envVars["MARIADB_USER"]; ok {
+			creds.DBUser = val
+		}
+		if val, ok := envVars["MYSQL_PASSWORD"]; ok {
+			creds.DBPassword = val
+		} else if val, ok := envVars["MARIADB_PASSWORD"]; ok {
+			creds.DBPassword = val
+		}
+		// Fallback to root password if user password not set
+		if creds.DBPassword == "" {
+			if val, ok := envVars["MYSQL_ROOT_PASSWORD"]; ok {
+				creds.DBUser = "root"
+				creds.DBPassword = val
+			} else if val, ok := envVars["MARIADB_ROOT_PASSWORD"]; ok {
+				creds.DBUser = "root"
+				creds.DBPassword = val
+			}
+		}
+	}
+
+	// Only return if we got at least user or password
+	if creds.DBUser != "" || creds.DBPassword != "" {
+		return creds
+	}
+	return nil
+}

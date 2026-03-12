@@ -113,15 +113,6 @@ func main() {
 		}
 	}
 
-	// Load saved config for this container
-	savedConfig := loadContainerConfig(selectedContainer)
-	hasSavedConfig := savedConfig != nil
-	if hasSavedConfig {
-		dbName = savedConfig.DBName
-		dbUser = savedConfig.DBUser
-		dbPassword = savedConfig.DBPassword
-	}
-
 	// Set default user and password placeholder based on DB type
 	passwordPlaceholder := "password"
 	defaultUserPlaceholder := "root"
@@ -130,12 +121,27 @@ func main() {
 		passwordPlaceholder = "app"
 	}
 
+	// Load credentials from multiple sources (priority: saved > env vars > defaults)
+	savedConfig := loadContainerConfig(selectedContainer)
+	envCreds := getCredentialsFromContainer(selectedContainer, dbType)
+
+	if savedConfig != nil {
+		// Use saved config as primary source
+		dbName = savedConfig.DBName
+		dbUser = savedConfig.DBUser
+		dbPassword = savedConfig.DBPassword
+	} else if envCreds != nil {
+		// Fallback to environment variables from container
+		dbName = envCreds.DBName
+		dbUser = envCreds.DBUser
+		dbPassword = envCreds.DBPassword
+	}
+
 	// Store saved values for later restoration if user leaves fields empty
-	// If saved value equals default, don't pre-fill to show placeholder
 	savedDbUser := dbUser
 	savedDbPassword := dbPassword
 
-	// Clear values so form starts fresh - show placeholder if saved == default
+	// Clear values if they match defaults to show placeholders
 	if dbUser == defaultUserPlaceholder {
 		dbUser = ""
 	}
