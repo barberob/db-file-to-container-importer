@@ -141,14 +141,6 @@ func main() {
 	savedDbUser := dbUser
 	savedDbPassword := dbPassword
 
-	// Clear values if they match defaults to show placeholders
-	if dbUser == defaultUserPlaceholder {
-		dbUser = ""
-	}
-	if dbPassword == passwordPlaceholder {
-		dbPassword = ""
-	}
-
 	// Step 3: Configuration
 	restForm := huh.NewForm(
 		huh.NewGroup(
@@ -213,7 +205,7 @@ func main() {
 	// Import with retry mechanism
 	importSuccess := false
 	var lastErr error
-	
+
 	for !importSuccess {
 		importFn := func() error {
 			baseName := filepath.Base(selectedFile)
@@ -247,7 +239,7 @@ func main() {
 					if err := runWithError(dropCmd[0], dropCmd[1:]...); err != nil {
 						return err
 					}
-					
+
 					// Create database using createdb command
 					createCmd := []string{"docker", "exec"}
 					if dbPassword != "" {
@@ -297,7 +289,7 @@ func main() {
 			if err := runWithError("docker", "exec", selectedContainer, "rm", "-f", remoteFile); err != nil {
 				return err
 			}
-			
+
 			return nil
 		}
 
@@ -315,9 +307,9 @@ func main() {
 			} else {
 				errorMsg = err.Error()
 			}
-			
+
 			fmt.Printf("\n❌ Échec de l'import: %s\n\n", errorMsg)
-			
+
 			// Ask user what to do
 			var action string
 			retryForm := huh.NewForm(
@@ -332,40 +324,40 @@ func main() {
 						Height(5),
 				),
 			)
-			
+
 			if err := retryForm.Run(); err != nil {
 				os.Exit(0)
 			}
-			
+
 			if action == "cancel" {
 				os.Exit(1)
 			}
-			
+
 			// User wants to retry - show credential form again
 			savedDbUser := dbUser
 			savedDbPassword := dbPassword
-			
+
 			retryCredsForm := huh.NewForm(
 				huh.NewGroup(
 					huh.NewInput().
 						Title("Base de données").
 						Value(&dbName),
-					
+
 					huh.NewInput().
 						Title("Utilisateur DB").
 						Value(&dbUser),
-					
+
 					huh.NewInput().
 						Title("Mot de passe DB").
 						Password(true).
 						Value(&dbPassword),
 				),
 			)
-			
+
 			if err := retryCredsForm.Run(); err != nil {
 				os.Exit(0)
 			}
-			
+
 			// Apply saved values if fields are left empty
 			if dbUser == "" {
 				dbUser = savedDbUser
@@ -452,7 +444,7 @@ func browseForFile(startDir string) (string, error) {
 			modTime int64
 		}
 		var files []fileInfo
-		
+
 		for _, e := range entries {
 			if e.IsDir() {
 				continue
@@ -470,7 +462,7 @@ func browseForFile(startDir string) (string, error) {
 				}
 			}
 		}
-		
+
 		// Sort by modification time (most recent first)
 		for i := 0; i < len(files)-1; i++ {
 			for j := i + 1; j < len(files); j++ {
@@ -479,7 +471,7 @@ func browseForFile(startDir string) (string, error) {
 				}
 			}
 		}
-		
+
 		for _, f := range files {
 			options = append(options, huh.NewOption("📄 "+f.name, "file:"+f.name))
 		}
