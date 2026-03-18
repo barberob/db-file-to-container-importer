@@ -26,15 +26,15 @@ func main() {
 		log.Fatal("Aucun conteneur Docker actif: ", err)
 	}
 
-	// Step 0: Select source (local or S3)
+	// Step 0: Select source (S3 or local)
 	var source string
 	sourceForm := huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().
 				Title("Source du fichier").
 				Options(
-					huh.NewOption("📁 Fichier local", "local"),
 					huh.NewOption("☁️  Bucket S3", "s3"),
+					huh.NewOption("📁 Fichier local", "local"),
 				).
 				Value(&source).
 				Height(5),
@@ -79,19 +79,58 @@ func main() {
 	)
 
 	// Step 1: Select container
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("🐳 Conteneur cible").
-				Options(containerToOptions(containers)...).
-				Value(&selectedContainer).
-				Height(10).
-				Filtering(true),
-		),
-	)
+	composeOption := huh.NewOption("🚀 Lancer docker-compose up -d (dossier courant)", "__compose_up__")
 
-	if err := form.Run(); err != nil {
-		os.Exit(0)
+	// Loop until user selects a container (not the compose option or continues after compose)
+	for {
+		containerOptions := containerToOptions(containers)
+		// Add option to launch docker-compose up -d at the TOP of the list
+		containerOptions = append([]huh.Option[string]{composeOption}, containerOptions...)
+
+		form := huh.NewForm(
+			huh.NewGroup(
+				huh.NewSelect[string]().
+					Title("🐳 Conteneur cible").
+					Options(containerOptions...).
+					Value(&selectedContainer).
+					Height(10).
+					Filtering(true),
+			),
+		)
+
+		if err := form.Run(); err != nil {
+			os.Exit(0)
+		}
+
+		// Handle docker-compose up -d selection
+		if selectedContainer == "__compose_up__" {
+			fmt.Println("🚀 Lancement de docker-compose up -d...")
+			cmd := exec.Command("docker-compose", "up", "-d")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				fmt.Printf("\n❌ Erreur lors du lancement de docker-compose: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("✅ Conteneurs démarrés !")
+			fmt.Println()
+
+			// Relister les conteneurs et revenir à la sélection
+			containers, err = listContainers()
+			if err != nil {
+				log.Fatal("Erreur lors du listage des conteneurs: ", err)
+			}
+
+			if len(containers) == 0 {
+				fmt.Println("⚠️ Aucun conteneur trouvé après le démarrage.")
+			}
+
+			// Continue the loop to show the container list again
+			continue
+		}
+
+		// User selected a container, exit the loop
+		break
 	}
 
 	// Step 2: Auto-detect or select DB type
@@ -151,7 +190,7 @@ func main() {
 			fmt.Printf("   - Utilisateur: %s\n", envCreds.DBUser)
 		}
 		if envCreds.DBPassword != "" {
-			fmt.Printf("   - Mot de passe: %s\n", strings.Repeat("*", len(envCreds.DBPassword)))
+			fmt.Printf("   - Mot de passe: %s\n", envCreds.DBPassword)
 		}
 		if savedConfig != nil {
 			fmt.Println("   (les valeurs sauvegardées seront utilisées)")
